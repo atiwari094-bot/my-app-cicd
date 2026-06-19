@@ -1,5 +1,4 @@
 stages:
- # - quality
   - build
   - scan
   - deploy
@@ -14,134 +13,58 @@ variables:
 
 workflow:
   rules:
-    - if: '$CI_COMMIT_BRANCH'
-
-#code_quality:
-  #stage: quality
-  #image: maven:3.9-eclipse-temurin-21
-  #script:
-  #  - mvn clean verify
-  #rules:
-  #  - if: '$CI_COMMIT_BRANCH'
+    - when: always
 
 docker_build_push:
   stage: build
   image: docker:27-cli
+
   services:
     - name: docker:27-dind
-      command: ["--tls=false"]
+      command:
+        - "--tls=false"
+
   before_script:
     - docker info
     - echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+
   script:
     - docker build -t "$FULL_IMAGE" -t "$DOCKERHUB_USERNAME/$APP_NAME:latest" .
     - docker push "$FULL_IMAGE"
     - docker push "$DOCKERHUB_USERNAME/$APP_NAME:latest"
+
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
+
 
 image_scan:
   stage: scan
+
   image:
     name: aquasec/trivy:latest
     entrypoint: [""]
+
   script:
     - trivy image --exit-code 0 --severity LOW,MEDIUM "$FULL_IMAGE"
     - trivy image --exit-code 1 --severity HIGH,CRITICAL "$FULL_IMAGE"
+
   needs:
     - docker_build_push
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
+
 
 deploy_kubernetes:
   stage: deploy
+
   image:
     name: bitnami/kubectl:latest
     entrypoint: [""]
+
   before_script:
     - mkdir -p ~/.kube
     - echo "$KUBE_CONFIG_B64" | base64 -d > ~/.kube/config
-    - kubectl version --client
+
   script:
     - kubectl apply -f k8s/namespace.yaml
     - sed "s|DOCKER_IMAGE_PLACEHOLDER|$FULL_IMAGE|g" k8s/deployment.yaml > k8s/deployment.generated.yaml
     - kubectl apply -f k8s/deployment.generated.yaml
-    - kubectl apply -f k8s/service.yaml
-    - kubectl rollout status deployment/$APP_NAME -n "$KUBE_NAMESPACE" --timeout=180s
-stages:
- # - quality
-  - build
-  - scan
-  - deploy
-
-variables:
-  DOCKER_HOST: tcp://docker:2375
-  DOCKER_TLS_CERTDIR: ""
-  DOCKER_DRIVER: overlay2
-  IMAGE_NAME: "$DOCKERHUB_USERNAME/$APP_NAME"
-  IMAGE_TAG: "$CI_COMMIT_SHORT_SHA"
-  FULL_IMAGE: "$DOCKERHUB_USERNAME/$APP_NAME:$CI_COMMIT_SHORT_SHA"
-
-workflow:
-  rules:
-    - if: '$CI_COMMIT_BRANCH'
-
-#code_quality:
-  #stage: quality
-  #image: maven:3.9-eclipse-temurin-21
-  #script:
-  #  - mvn clean verify
-  #rules:
-  #  - if: '$CI_COMMIT_BRANCH'
-
-docker_build_push:
-  stage: build
-  image: docker:27-cli
-  services:
-    - name: docker:27-dind
-      command: ["--tls=false"]
-  before_script:
-    - docker info
-    - echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
-  script:
-    - docker build -t "$FULL_IMAGE" -t "$DOCKERHUB_USERNAME/$APP_NAME:latest" .
-    - docker push "$FULL_IMAGE"
-    - docker push "$DOCKERHUB_USERNAME/$APP_NAME:latest"
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
-
-image_scan:
-  stage: scan
-  image:
-    name: aquasec/trivy:latest
-    entrypoint: [""]
-  script:
-    - trivy image --exit-code 0 --severity LOW,MEDIUM "$FULL_IMAGE"
-    - trivy image --exit-code 1 --severity HIGH,CRITICAL "$FULL_IMAGE"
-  needs:
-    - docker_build_push
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
-
-deploy_kubernetes:
-  stage: deploy
-  image:
-    name: bitnami/kubectl:latest
-    entrypoint: [""]
-  before_script:
-    - mkdir -p ~/.kube
-    - echo "$KUBE_CONFIG_B64" | base64 -d > ~/.kube/config
-    - kubectl version --client
-  script:
-    - kubectl apply -f k8s/namespace.yaml
-    - sed "s|DOCKER_IMAGE_PLACEHOLDER|$FULL_IMAGE|g" k8s/deployment.yaml > k8s/deployment.generated.yaml
-    - kubectl apply -f k8s/deployment.generated.yaml
-    - kubectl apply -f k8s/service.yaml
-    - kubectl rollout status deployment/$APP_NAME -n "$KUBE_NAMESPACE" --timeout=180s
-  environment:
-    name: production
-  needs:
-    - image_scan
-  rules: 
-    - if: '$CI_COMMIT_BRANCH == "main"'
-
+    - kubectl apply -f k8s/services.yaml
